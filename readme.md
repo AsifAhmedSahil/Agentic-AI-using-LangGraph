@@ -393,3 +393,206 @@ These 6 steps happen **automatically** — you just define the graph and LangGra
 - **Reducers = how state changes** — Be ready to explain that reducers control how each key in state gets updated (append, overwrite, etc.).
 - **Graph vs Chain** — LangGraph = graph (nodes + edges, flexible). LangChain = chain (linear, rigid). This is the most common interview question.
 - **Super step** — LangGraph is not purely sequential. It can run multiple nodes in parallel in a single super step.
+
+---
+
+# Practical LangGraph Workflows
+
+This section covers hands-on notebooks that demonstrate LangGraph concepts with real code.
+
+---
+
+## 1️⃣ BMI Calculator Workflow (`1_bmi_workflow.ipynb`)
+
+**Goal:** Build a simple two-step graph that computes BMI and categorizes it.
+
+### Code Pattern
+
+```python
+from langgraph.graph import StateGraph, START, END
+from typing import TypedDict
+
+# 1. Define state
+class BMIState(TypedDict):
+    weight_kg: float
+    height_m: float
+    bmi: float
+    category: str
+
+# 2. Define nodes (Python functions)
+def calculate_bmi(state: BMIState) -> BMIState:
+    bmi = state['weight_kg'] / (state['height_m'] ** 2)
+    state['bmi'] = round(bmi, 2)
+    return state
+
+def label_bmi(state: BMIState) -> BMIState:
+    bmi = state['bmi']
+    if bmi < 18.5:       state['category'] = 'underweight'
+    elif bmi < 25:       state['category'] = 'Normal'
+    elif bmi < 30:       state['category'] = 'Overweight'
+    else:                state['category'] = 'obese'
+    return state
+
+# 3. Build graph
+graph = StateGraph(BMIState)
+graph.add_node('calculate_bmi', calculate_bmi)
+graph.add_node('label_bmi', label_bmi)
+graph.add_edge(START, 'calculate_bmi')
+graph.add_edge('calculate_bmi', 'label_bmi')
+graph.add_edge('label_bmi', END)
+
+# 4. Compile
+workflow = graph.compile()
+
+# 5. Invoke
+result = workflow.invoke({'weight_kg': 80, 'height_m': 1.73})
+print(result)
+# Output: {'weight_kg': 80, 'height_m': 1.73, 'bmi': 26.73, 'category': 'Overweight'}
+```
+
+### Key Takeaways
+
+| Concept | What it teaches |
+|---------|----------------|
+| **State** | State is a `TypedDict` — all nodes share and update it |
+| **Node** | Any Python function that receives state and returns state |
+| **Edge** | Directs flow: `START → node1 → node2 → END` |
+| **Invoke** | `workflow.invoke(initial_state)` runs the graph and returns final state |
+| **Return** | A node **must return state** — otherwise updates are lost |
+
+**⚠️ Common Bug:** Forgetting `return state` in a node — the state changes won't be applied.
+
+---
+
+## 2️⃣ Simple LLM Q&A Workflow (`2_simple_llm_workflow.ipynb`)
+
+**Goal:** Integrate an LLM (ChatOpenAI) into a LangGraph workflow.
+
+### Code Pattern
+
+```python
+from langgraph.graph import StateGraph, START, END
+from langchain_openai import ChatOpenAI
+from typing import TypedDict
+from dotenv import load_dotenv
+
+load_dotenv()
+model = ChatOpenAI()
+
+class LLMstate(TypedDict):
+    question: str
+    answer: str
+
+def llm_qa(state: LLMstate) -> LLMstate:
+    question = state['question']
+    prompt = f'Answer to the following question {question}'
+    answer = model.invoke(prompt).content
+    state['answer'] = answer
+    return state
+
+graph = StateGraph(LLMstate)
+graph.add_node('llm_qa', llm_qa)
+graph.add_edge(START, 'llm_qa')
+graph.add_edge('llm_qa', END)
+workflow = graph.compile()
+
+result = workflow.invoke({'question': 'what is the distance between earth and moon?'})
+print(result)
+# Output: {'question': '...', 'answer': 'The average distance ... 384,400 km ...'}
+```
+
+### Key Takeaways
+
+| Concept | What it teaches |
+|---------|----------------|
+| **LLM in a node** | Call `model.invoke(prompt)` inside a node function |
+| **State → LLM → State** | Extract data from state → call LLM → store result back in state |
+| **Minimal graph** | Even a single-node graph is a valid LangGraph workflow |
+| **dotenv** | Use `.env` files to manage API keys securely |
+
+**Interview Tip:** This is the simplest LangGraph pattern — one LLM call inside one node. It shows how LangGraph wraps any Python logic (including LLM calls) into a graph node.
+
+---
+
+## 3️⃣ Prompt Chaining — Blog Generator (`3_prompt_chaining.ipynb`)
+
+**Goal:** Chain two LLM calls — first generates an outline, then writes a full blog using that outline.
+
+### Code Pattern
+
+```python
+class BlogState(TypedDict):
+    title: str
+    outline: str
+    content: str
+
+def create_outline(state: BlogState) -> BlogState:
+    prompt = f"Generate a detailed outline for a blog on - {state['title']}"
+    state['outline'] = model.invoke(prompt).content
+    return state
+
+def create_blog(state: BlogState) -> BlogState:
+    prompt = f"Write a blog on '{state['title']}' using outline:\n{state['outline']}"
+    state['content'] = model.invoke(prompt).content
+    return state
+
+# Graph: START → create_outline → create_blog → END
+```
+
+### Key Takeaways
+
+| Concept | What it teaches |
+|---------|----------------|
+| **Prompt Chaining** | Output of one LLM call becomes input to the next |
+| **Multi-node LLM** | Each node can make its own LLM call |
+| **State as bridge** | `outline` is written by node 1, read by node 2 — state connects them |
+| **Real use case** | Content generation pipelines (outline → draft → edit → final) |
+
+### Prompt Chaining Pattern (General)
+
+```
+Input → LLM Call 1 → Intermediate Result → LLM Call 2 → Final Output
+                     ↑                            ↓
+                  State Key 1                State Key 2
+```
+
+Prompt chaining is ideal when:
+- Each step needs a **different prompt**
+- Later steps depend on earlier outputs
+- You want to **separate concerns** (e.g., planning vs writing)
+
+---
+
+## 📊 Workflow Comparison Table
+
+| Feature | BMI Workflow | LLM Q&A | Blog Generator |
+|---------|-------------|---------|----------------|
+| **Nodes** | 2 (calc + label) | 1 (LLM) | 2 (outline + blog) |
+| **LLM used?** | No | Yes | Yes (2 calls) |
+| **Pattern** | Sequential logic | Single LLM call | Prompt chaining |
+| **State keys** | 4 | 2 | 3 |
+| **Key lesson** | Nodes must return state | LLM integration | Chaining outputs |
+
+---
+
+## 🚨 Common Mistakes & Fixes
+
+| Mistake | Why it fails | Fix |
+|---------|-------------|-----|
+| Forgetting `return state` | Node updates are silently dropped | Always `return state` at end of node |
+| Missing state keys | `KeyError` on access | Define all keys in TypedDict |
+| Not calling `compile()` | Cannot invoke the graph | Call `workflow = graph.compile()` |
+| Wrong edge names | `ValueError` — node not found | Edge names must match `add_node` names |
+| Forgetting `load_dotenv()` | LLM auth fails | Call `load_dotenv()` before creating `ChatOpenAI` |
+
+---
+
+## 💡 Interview Quick Notes
+
+- **LangGraph flow:** Define State → Create Nodes → Add Edges → Compile → Invoke
+- **Node = Python function** that takes state, does work, returns state
+- **State = TypedDict** shared across all nodes
+- **Graph execution:** Runs nodes in edge order, passing state through
+- **Prompt chaining =** LLM output feeds into next LLM's prompt via state
+- **LLM in LangGraph =** Just call `model.invoke()` inside a node — nothing special needed
+- **Why LangGraph over LangChain for these?** Even simple workflows benefit from built-in state management vs manual variable passing
