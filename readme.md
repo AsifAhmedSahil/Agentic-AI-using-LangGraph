@@ -563,6 +563,122 @@ Prompt chaining is ideal when:
 
 ---
 
+## 4️⃣ Batsman Stats Calculator (`4_batsman_workflow.ipynb`)
+
+**Goal:** Compute cricket stats (strike rate, balls per boundary, boundary %) in parallel, then summarize.
+
+### Code Pattern
+
+```python
+class BatsmanState(TypedDict):
+    runs: int
+    balls: int
+    fours: int
+    sixes: int
+    sr: float
+    bpb: float
+    boundary_percent: float
+    summary: str
+
+def calculate_sr(state: BatsmanState):
+    return {"sr": (state['runs'] / state['balls']) * 100}
+
+def calculate_bpb(state: BatsmanState):
+    return {"bpb": state['balls'] / (state['fours'] + state['sixes'])}
+
+def calculate_boundary_percent(state: BatsmanState):
+    bp = ((state['fours']*4) + (state['sixes']*6)) / state['runs'] * 100
+    return {"boundary_percent": bp}
+
+def summary(state: BatsmanState):
+    s = f"SR: {state['sr']}, BPB: {state['bpb']}, Bound%: {state['boundary_percent']}"
+    return {"summary": s}
+
+graph = StateGraph(BatsmanState)
+graph.add_node('calculate_sr', calculate_sr)
+graph.add_node('calculate_bpb', calculate_bpb)
+graph.add_node('calculate_boundary_percent', calculate_boundary_percent)
+graph.add_node('summary', summary)
+
+graph.add_edge(START, 'calculate_sr')
+graph.add_edge(START, 'calculate_bpb')
+graph.add_edge(START, 'calculate_boundary_percent')
+graph.add_edge('calculate_sr', 'summary')
+graph.add_edge('calculate_bpb', 'summary')
+graph.add_edge('calculate_boundary_percent', 'summary')
+graph.add_edge('summary', END)
+
+workflow = graph.compile()
+result = workflow.invoke({'runs': 100, 'balls': 50, 'fours': 6, 'sixes': 4})
+```
+
+### Key Takeaways
+
+| Concept | What it teaches |
+|---------|----------------|
+| **Partial update** | Nodes return only the keys they changed — `return {"sr": sr}` |
+| **Parallel execution** | Nodes from `START` run simultaneously (fan-out) |
+| **Fan-in** | `summary` waits for ALL 3 calculators to finish |
+| **No reducer needed** | Each parallel node writes a unique key — no merge conflicts |
+
+**⚠️ Common Bug:** Returning a set `{"key", value}` instead of dict `{"key": value}` — LangGraph expects a dict.
+
+---
+
+## 5️⃣ Essay Evaluation Workflow (`5_essay_evaluation.ipynb`)
+
+**Goal:** Evaluate an essay across 3 criteria (language, analysis, clarity) using parallel LLM calls, then aggregate scores.
+
+### Code Pattern
+
+```python
+from pydantic import BaseModel, Field
+
+class EvaluationSchema(BaseModel):
+    feedback: str = Field(description="Detailed feedback")
+    score: int = Field(description="Score out of 10", ge=0, le=10)
+
+structure_model = model.with_structured_output(EvaluationSchema)
+
+class EssayState(TypedDict):
+    essay: str
+    language_feedback: str
+    analysis_feedback: str
+    clarity_feedback: str
+    language_score: float
+    analysis_score: float
+    clarity_score: float
+    overall_feedback: str
+    indivisual_scores: list[int]
+    avg_score: float
+
+def evaluate_language(state: EssayState):
+    prompt = f"Evaluate language quality... {state['essay']}"
+    output = structure_model.invoke(prompt)
+    return {"language_feedback": output.feedback, "language_score": output.score}
+
+# evaluate_analysis, evaluate_thought — same pattern
+
+def final_evaluation(state: EssayState):
+    scores = [state['language_score'], state['analysis_score'], state['clarity_score']]
+    return {"indivisual_scores": scores, "avg_score": sum(scores) / len(scores)}
+
+# Graph: START → (3 parallel evaluators) → final_evaluation → END
+```
+
+### Key Takeaways
+
+| Concept | What it teaches |
+|---------|----------------|
+| **Structured output** | `model.with_structured_output(Schema)` returns typed objects |
+| **Parallel LLM calls** | Each evaluator calls the LLM independently |
+| **Per-node score keys** | Each parallel node writes its own key — avoids reducer race conditions |
+| **Post-hoc aggregation** | Final node builds the list from individual scores |
+
+**⚠️ Common Bug:** f-string quote clash — `f'...{state['key']}...'` breaks. Use `f"...{state['key']}..."` instead.
+
+---
+
 ## 📊 Workflow Comparison Table
 
 | Feature | BMI Workflow | LLM Q&A | Blog Generator |
